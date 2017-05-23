@@ -1,24 +1,46 @@
 package io.github.francoiscambell.clionarduinoplugin.wizards;
 
-import com.intellij.ide.*;
-import com.intellij.openapi.fileEditor.*;
-import com.intellij.openapi.project.*;
-import com.intellij.openapi.ui.*;
-import com.intellij.openapi.util.io.*;
-import com.intellij.openapi.vfs.*;
-import com.jetbrains.cidr.cpp.*;
+import com.intellij.ide.RecentDirectoryProjectsManager;
+import com.intellij.ide.RecentProjectsManager;
+import com.intellij.ide.util.DirectoryUtil;
+import com.intellij.ide.util.PropertiesComponent;
+import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.components.impl.stores.DirectoryStorageUtil;
+import com.intellij.openapi.fileEditor.OpenFileDescriptor;
+import com.intellij.openapi.project.Project;
+import com.intellij.openapi.project.ProjectManager;
+import com.intellij.openapi.ui.Messages;
+import com.intellij.openapi.util.io.FileUtil;
+import com.intellij.openapi.vfs.LocalFileSystem;
+import com.intellij.openapi.vfs.VfsUtil;
+import com.intellij.openapi.vfs.VirtualFile;
+import com.jetbrains.cidr.cpp.CPPLog;
+import com.jetbrains.cidr.cpp.cmake.CMakeProjectOpenProcessor;
 import com.jetbrains.cidr.cpp.cmake.projectWizard.*;
-import com.jetbrains.cidr.cpp.cmake.workspace.*;
-import io.github.francoiscambell.clionarduinoplugin.*;
-import io.github.francoiscambell.clionarduinoplugin.resources.*;
+import io.github.francoiscambell.clionarduinoplugin.CMakeListsEditor;
+import io.github.francoiscambell.clionarduinoplugin.resources.ArduinoToolchainFiles;
+import io.github.francoiscambell.clionarduinoplugin.resources.Strings;
+import org.jdom.JDOMException;
 
-import java.io.*;
+import java.io.File;
+import java.io.FilenameFilter;
+import java.io.IOException;
+import java.util.Optional;
+
+import static com.jetbrains.cidr.cpp.cmake.projectWizard.CLionProjectWizardUtils.refreshProjectDir;
+
 
 /**
  * Created by francois on 15-08-14.
  */
 public class NewArduinoProjectWizard extends CMakeProjectWizard {
-    private NewCMakeProjectStepAdapter adapter = new NewCMakeProjectStepAdapter();
+
+    private String lastDir = Optional.ofNullable(RecentProjectsManager.getInstance().getLastProjectCreationLocation())
+            .orElse("");
+
+    private NewArduinoProjectForm adapter = new NewArduinoProjectForm(
+            "untitled-0",
+            new File(lastDir).getPath());
 
     public NewArduinoProjectWizard() {
         super("New Arduino Sketch Project", "NewArduinoSketchProject");
@@ -27,7 +49,8 @@ public class NewArduinoProjectWizard extends CMakeProjectWizard {
 
     @Override
     protected boolean tryFinish() {
-        String projectRootPath = this.adapter.getLocation();
+        String projectRootPath = adapter.getLocation();
+
         File projectRootDir = new File(projectRootPath);
         if (projectRootDir.exists()) {
             String[] fileList = projectRootDir.list(new FilenameFilter() {
@@ -46,10 +69,8 @@ public class NewArduinoProjectWizard extends CMakeProjectWizard {
         } else {
             try {
                 VfsUtil.createDirectories(projectRootPath);
-            } catch (RuntimeException e) {
-                e.printStackTrace();
-                throw e;
-            } catch (IOException e) {
+            } catch (IOException | RuntimeException e) {
+                CPPLog.LOG.warn(e);
                 return false;
             }
         }
@@ -90,6 +111,14 @@ public class NewArduinoProjectWizard extends CMakeProjectWizard {
                 cMakeListsEditor.project("${PROJECT_NAME}");
                 cMakeListsEditor.blankLine();
                 cMakeListsEditor.set("${CMAKE_PROJECT_NAME}_SKETCH", projectName + ".ino");
+                cMakeListsEditor.blankLine();
+                cMakeListsEditor.appendLine("#### Uncomment below additional settings as needed.");
+                cMakeListsEditor.appendLine("# set(${CMAKE_PROJECT_NAME}_BOARD mega)");
+                cMakeListsEditor.appendLine("# set(${CMAKE_PROJECT_NAME}_PORT /dev/ttyACM0)");
+                cMakeListsEditor.appendLine("# set(mega.build.mcu atmega2560)");
+                cMakeListsEditor.appendLine("# set(mega.upload.protocol wiring)");
+                cMakeListsEditor.appendLine("# set(mega.upload.speed 115200)");
+                cMakeListsEditor.blankLine();
                 cMakeListsEditor.method("generate_arduino_firmware", "${CMAKE_PROJECT_NAME}");
 
                 ArduinoToolchainFiles.copyToDirectory(VfsUtil.findFileByIoFile(projectRoot, true));
@@ -114,16 +143,30 @@ public class NewArduinoProjectWizard extends CMakeProjectWizard {
         if (mainSketchFile == null) {
             return;
         }
-        final Project project = CMakeWorkspace.openProject(cMakeLists, null, false);
+
+        final Project project;
+        try {
+            project = ProjectManager.getInstance().loadAndOpenProject(cMakeLists.getPath());
+        } catch (IOException | JDOMException e) {
+            CPPLog.LOG.warn(e);
+            return;
+        }
+
         if (project == null) {
             return;
         }
-        deleteBuildOutputDir(project);
+
+        CMakeProjectOpenProcessor.OpenProjectSpec projectSpec = CMakeProjectOpenProcessor.getHelper()
+                .getAndClearFileToOpenData(project);
+
+        deleteBuildOutputDir(projectSpec);
         (new OpenFileDescriptor(project, cMakeLists)).navigate(false);
         (new OpenFileDescriptor(project, mainSketchFile)).navigate(true);
     }
 
-    private void deleteBuildOutputDir(Project project) {
-        FileUtil.delete(CMakeWorkspace.getInstance(project).getProjectGeneratedDir());
+    private void deleteBuildOutputDir(CMakeProjectOpenProcessor.OpenProjectSpec projectSpec) {
+        if (projectSpec != null && projectSpec.generationDir != null) {
+            FileUtil.delete(projectSpec.generationDir);
+        }
     }
 }
